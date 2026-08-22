@@ -37,12 +37,3 @@ nvmman
 | `Enter` | Activate the selected action or update |
 | `j` / `k`, arrows, mouse wheel | Navigate and scroll |
 | `q` / `Esc` | Quit or close a dialog |
-
-## Publishing
-
-```zsh
-cargo publish --dry-run
-cargo publish
-```
-
-Publishing requires an authenticated crates.io token configured with `cargo login`.

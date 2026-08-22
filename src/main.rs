@@ -33,12 +33,12 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 const NODE_INDEX_URL: &str = "https://nodejs.org/dist/index.json";
-const ACCENT: Color = Color::Rgb(0, 211, 173);
-const ACCENT_DIM: Color = Color::Rgb(0, 133, 113);
-const WARM: Color = Color::Rgb(255, 183, 77);
-const MUTED: Color = Color::Rgb(138, 155, 175);
-const SURFACE: Color = Color::Rgb(23, 29, 40);
-const DANGER: Color = Color::Rgb(246, 111, 111);
+const ACCENT: Color = Color::LightCyan;
+const ACCENT_DIM: Color = Color::Cyan;
+const WARM: Color = Color::LightYellow;
+const MUTED: Color = Color::LightBlue;
+const SURFACE: Color = Color::DarkGray;
+const DANGER: Color = Color::LightRed;
 const SCREEN_COUNT: u16 = 5;
 
 fn main() -> Result<()> {
@@ -585,6 +585,12 @@ enum Screen {
     Activity,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SidebarHit {
+    Screen(usize),
+    Action(usize),
+}
+
 impl Screen {
     const ALL: [Self; 5] = [
         Self::Dashboard,
@@ -643,6 +649,7 @@ struct App {
     running: bool,
     busy: bool,
     screen: Screen,
+    selected_view: usize,
     snapshot: Option<Snapshot>,
     registry: Option<Registry>,
     updates: Vec<UpdateCandidate>,
@@ -662,6 +669,7 @@ impl App {
             running: true,
             busy: false,
             screen: Screen::Dashboard,
+            selected_view: 0,
             snapshot: None,
             registry: None,
             updates: Vec::new(),
@@ -752,10 +760,10 @@ impl App {
             KeyCode::Char('3') => self.select_screen(Screen::Registry),
             KeyCode::Char('4') => self.select_screen(Screen::Updates),
             KeyCode::Char('5') => self.select_screen(Screen::Activity),
-            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
-            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::PageDown => self.scroll = self.scroll.saturating_add(8),
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(8),
+            KeyCode::Down => self.navigate_down(),
+            KeyCode::Up => self.navigate_up(),
+            KeyCode::Char('j') | KeyCode::PageDown => self.scroll_content(8),
+            KeyCode::Char('k') | KeyCode::PageUp => self.scroll_content(-8),
             KeyCode::Enter if self.screen == Screen::Updates => {
                 if let Some(candidate) = self.updates.get(self.selected_update).cloned() {
                     self.confirm(Task::UpdatePackage(candidate));
@@ -767,8 +775,8 @@ impl App {
 
     fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) {
         match mouse.kind {
-            MouseEventKind::ScrollDown => self.move_selection(3),
-            MouseEventKind::ScrollUp => self.move_selection(-3),
+            MouseEventKind::ScrollDown => self.scroll_content(3),
+            MouseEventKind::ScrollUp => self.scroll_content(-3),
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.modal.is_some() {
                     let dialog = centered_rect(60, 28, area);
@@ -791,41 +799,25 @@ impl App {
     }
 
     fn handle_click(&mut self, column: u16, row: u16, area: Rect) {
-        let main = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(8),
-                Constraint::Length(2),
-            ])
-            .split(area)[1];
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(30), Constraint::Min(30)])
-            .split(main);
-        let sidebar = columns[0];
-        let content = columns[1];
-
-        if column >= sidebar.x && column < sidebar.right() {
-            let nav_start = sidebar.y + 2;
-            if row >= nav_start && row < nav_start + SCREEN_COUNT {
-                self.select_screen(Screen::ALL[(row - nav_start) as usize]);
-                return;
+        let (sidebar, content) = main_columns(area);
+        if let Some(hit) = sidebar_hit(sidebar, column, row) {
+            match hit {
+                SidebarHit::Screen(index) => self.select_screen(Screen::ALL[index]),
+                SidebarHit::Action(0) => self.start_task(Task::Refresh),
+                SidebarHit::Action(1) => self.confirm(Task::InstallLts),
+                SidebarHit::Action(2) => self.start_task(Task::SyncRegistry),
+                SidebarHit::Action(3) => self.confirm(Task::RestoreRegistry),
+                SidebarHit::Action(4) => self.start_task(Task::CheckUpdates),
+                SidebarHit::Action(_) => {}
             }
-            let action_start = nav_start + SCREEN_COUNT + 3;
-            match row.checked_sub(action_start) {
-                Some(0) => self.start_task(Task::Refresh),
-                Some(1) => self.confirm(Task::InstallLts),
-                Some(2) => self.start_task(Task::SyncRegistry),
-                Some(3) => self.confirm(Task::RestoreRegistry),
-                Some(4) => self.start_task(Task::CheckUpdates),
-                _ => {}
-            }
-        } else if self.screen == Screen::Updates && column >= content.x && row > content.y + 2 {
-            let index = (row - content.y - 3 + self.scroll) as usize;
-            if index < self.updates.len() {
-                self.selected_update = index;
-            }
+        } else if self.screen == Screen::Updates
+            && column >= content.x
+            && column < content.right()
+            && let Some(index) = update_row_at(content, row)
+            && let Some(candidate) = self.updates.get(index).cloned()
+        {
+            self.selected_update = index;
+            self.confirm(Task::UpdatePackage(candidate));
         }
     }
 
@@ -837,18 +829,52 @@ impl App {
 
     fn select_screen(&mut self, screen: Screen) {
         self.screen = screen;
+        self.selected_view = Screen::ALL
+            .iter()
+            .position(|candidate| *candidate == screen)
+            .unwrap_or_default();
         self.scroll = 0;
         if screen == Screen::Registry && self.registry.is_none() {
             self.registry = self.manager.load_registry().ok();
         }
     }
 
-    fn move_selection(&mut self, delta: i16) {
+    fn navigate_down(&mut self) {
         if self.screen == Screen::Updates && !self.updates.is_empty() {
             self.selected_update = self
                 .selected_update
-                .saturating_add_signed(delta as isize)
+                .saturating_add(1)
                 .min(self.updates.len().saturating_sub(1));
+        } else {
+            self.selected_view = (self.selected_view + 1) % Screen::ALL.len();
+            self.select_screen(Screen::ALL[self.selected_view]);
+        }
+    }
+
+    fn navigate_up(&mut self) {
+        if self.screen == Screen::Updates && !self.updates.is_empty() {
+            self.selected_update = self.selected_update.saturating_sub(1);
+        } else {
+            self.selected_view = self
+                .selected_view
+                .checked_sub(1)
+                .unwrap_or(Screen::ALL.len() - 1);
+            self.select_screen(Screen::ALL[self.selected_view]);
+        }
+    }
+
+    fn scroll_content(&mut self, delta: i16) {
+        if self.screen == Screen::Updates && !self.updates.is_empty() {
+            if delta.is_positive() {
+                self.selected_update = self
+                    .selected_update
+                    .saturating_add(usize::from(delta.unsigned_abs()))
+                    .min(self.updates.len().saturating_sub(1));
+            } else {
+                self.selected_update = self
+                    .selected_update
+                    .saturating_sub(usize::from(delta.unsigned_abs()));
+            }
         } else if delta.is_positive() {
             self.scroll = self.scroll.saturating_add(delta.unsigned_abs());
         } else {
@@ -910,6 +936,62 @@ fn task_label(task: &Task) -> &'static str {
     }
 }
 
+fn main_columns(area: Rect) -> (Rect, Rect) {
+    let main = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(2),
+        ])
+        .split(area)[1];
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(30), Constraint::Min(30)])
+        .split(main);
+    (columns[0], columns[1])
+}
+
+fn sidebar_rows(area: Rect) -> (Rect, Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(8),
+            Constraint::Length(9),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    (rows[0], rows[1])
+}
+
+fn sidebar_hit(sidebar: Rect, column: u16, row: u16) -> Option<SidebarHit> {
+    if column < sidebar.x || column >= sidebar.right() {
+        return None;
+    }
+    let (views, actions) = sidebar_rows(sidebar);
+    let view_content = Block::default().borders(Borders::ALL).inner(views);
+    if row >= view_content.y && row < view_content.bottom() {
+        let index = usize::from(row - view_content.y);
+        if index < usize::from(SCREEN_COUNT) {
+            return Some(SidebarHit::Screen(index));
+        }
+    }
+    let action_content = Block::default().borders(Borders::ALL).inner(actions);
+    if row >= action_content.y && row < action_content.bottom() {
+        let index = usize::from(row - action_content.y);
+        if index < 5 {
+            return Some(SidebarHit::Action(index));
+        }
+    }
+    None
+}
+
+fn update_row_at(content: Rect, row: u16) -> Option<usize> {
+    let inner = Block::default().borders(Borders::ALL).inner(content);
+    let first_data_row = inner.y.saturating_add(1);
+    row.checked_sub(first_data_row).map(usize::from)
+}
+
 fn render(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
     let layout = Layout::default()
@@ -921,12 +1003,9 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
         ])
         .split(area);
     render_header(frame, layout[0], app);
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(30), Constraint::Min(30)])
-        .split(layout[1]);
-    render_sidebar(frame, columns[0], app);
-    render_content(frame, columns[1], app);
+    let (sidebar, content) = main_columns(area);
+    render_sidebar(frame, sidebar, app);
+    render_content(frame, content, app);
     render_footer(frame, layout[2], app);
     if let Some(task) = &app.modal {
         render_confirmation(frame, area, task);
@@ -965,25 +1044,14 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_sidebar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(8),
-            Constraint::Length(9),
-            Constraint::Min(0),
-        ])
-        .split(area);
+    let (views, actions_area) = sidebar_rows(area);
     let navigation = Screen::ALL
         .iter()
         .enumerate()
         .map(|(index, screen)| ListItem::new(format!(" {}  {}", index + 1, screen.title())))
         .collect::<Vec<_>>();
-    let selected = Screen::ALL
-        .iter()
-        .position(|screen| *screen == app.screen)
-        .unwrap_or_default();
     let mut state = ListState::default();
-    state.select(Some(selected));
+    state.select(Some(app.selected_view));
     frame.render_stateful_widget(
         List::new(navigation)
             .block(
@@ -998,7 +1066,7 @@ fn render_sidebar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             ),
-        rows[0],
+        views,
         &mut state,
     );
     let actions = [
@@ -1016,7 +1084,7 @@ fn render_sidebar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                     format!(" {key} "),
                     Style::default().fg(Color::Black).bg(WARM),
                 ),
-                Span::raw(format!(" {label}")),
+                Span::styled(format!(" {label}"), Style::default().fg(Color::White)),
             ]))
         })
         .collect::<Vec<_>>();
@@ -1027,7 +1095,7 @@ fn render_sidebar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(WARM)),
         ),
-        rows[1],
+        actions_area,
     );
 }
 
@@ -1146,8 +1214,9 @@ fn render_packages(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             }
         }
     }
+    let total_rows = rows.len();
     let table = Table::new(
-        rows,
+        rows.into_iter().skip(usize::from(app.scroll)),
         [
             Constraint::Length(12),
             Constraint::Length(10),
@@ -1159,8 +1228,9 @@ fn render_packages(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             .style(Style::default().fg(WARM).add_modifier(Modifier::BOLD)),
     )
     .block(content_block(" Every installed nvm Node "))
-    .row_highlight_style(Style::default().bg(SURFACE));
+    .row_highlight_style(Style::default().bg(SURFACE).fg(Color::White));
     frame.render_widget(table, area);
+    render_scrollbar(frame, area, app.scroll, saturating_u16(total_rows));
 }
 
 fn render_registry(frame: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1248,7 +1318,7 @@ fn render_updates(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     ))
     .row_highlight_style(
         Style::default()
-            .bg(ACCENT_DIM)
+            .bg(SURFACE)
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     );
@@ -1290,11 +1360,13 @@ fn render_footer(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         Span::styled(status, Style::default().fg(MUTED)),
     ]);
     frame.render_widget(
-        Paragraph::new(footer).block(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(ACCENT_DIM)),
-        ),
+        Paragraph::new(footer)
+            .style(Style::default().fg(Color::White))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(ACCENT_DIM)),
+            ),
         area,
     );
 }
@@ -1397,7 +1469,7 @@ fn content_block(title: &str) -> Block<'_> {
         .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT_DIM))
-        .style(Style::default().bg(SURFACE))
+        .style(Style::default().fg(Color::White))
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -1452,5 +1524,38 @@ mod tests {
         let json = serde_json::to_string(&registry).expect("registry serializes");
         assert!(json.contains("schemaVersion"));
         assert!(json.contains("scannedNodeVersions"));
+    }
+
+    #[test]
+    fn sidebar_hit_testing_uses_the_visible_bordered_regions() {
+        let sidebar = Rect::new(0, 3, 30, 20);
+        let (views, actions) = sidebar_rows(sidebar);
+        let first_view_row = Block::default().borders(Borders::ALL).inner(views).y;
+        let first_action_row = Block::default().borders(Borders::ALL).inner(actions).y;
+
+        assert_eq!(
+            sidebar_hit(sidebar, 4, first_view_row),
+            Some(SidebarHit::Screen(0))
+        );
+        assert_eq!(
+            sidebar_hit(sidebar, 4, first_view_row + 4),
+            Some(SidebarHit::Screen(4))
+        );
+        assert_eq!(
+            sidebar_hit(sidebar, 4, first_action_row),
+            Some(SidebarHit::Action(0))
+        );
+        assert_eq!(
+            sidebar_hit(sidebar, 4, first_action_row + 4),
+            Some(SidebarHit::Action(4))
+        );
+    }
+
+    #[test]
+    fn update_rows_start_after_the_table_header() {
+        let content = Rect::new(30, 3, 80, 20);
+        let inner = Block::default().borders(Borders::ALL).inner(content);
+        assert_eq!(update_row_at(content, inner.y + 1), Some(0));
+        assert_eq!(update_row_at(content, inner.y + 4), Some(3));
     }
 }
