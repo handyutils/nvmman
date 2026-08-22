@@ -42,11 +42,30 @@ const DANGER: Color = Color::Rgb(246, 111, 111);
 const SCREEN_COUNT: u16 = 5;
 
 fn main() -> Result<()> {
+    match env::args().nth(1).as_deref() {
+        Some("--help" | "-h") => {
+            print_help();
+            return Ok(());
+        }
+        Some("--version" | "-V") => {
+            println!("nvmman {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some(argument) => bail!("unknown argument: {argument}\n\nRun `nvmman --help` for usage."),
+        None => {}
+    }
     let manager = Manager::new()?;
     let mut terminal = TerminalGuard::enter()?;
     let result = run_app(&mut terminal.terminal, manager);
     terminal.restore()?;
     result
+}
+
+fn print_help() {
+    println!(
+        "nvmman {}\n\nInteractive nvm and global npm package manager.\n\nUSAGE:\n    nvmman\n\nSHORTCUTS:\n    r  Refresh state\n    l  Install latest native LTS\n    g  Sync package registry\n    a  Restore registry packages\n    u  Check global npm updates\n    1-5  Switch views\n    q  Quit\n\nThe interactive UI supports mouse selection and mouse-wheel scrolling.",
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, manager: Manager) -> Result<()> {
