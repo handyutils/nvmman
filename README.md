@@ -22,7 +22,11 @@ machine, restores packages into the default Node, and offers one-by-one updates.
 ```zsh
 cargo install nvmman
 nvmman
+nvmman update
 ```
+
+`nvmman update` checks crates.io and prints the exact installation command when
+a newer release is available.
 
 ## Shortcuts
 

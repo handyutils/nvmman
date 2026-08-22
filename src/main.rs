@@ -33,6 +33,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 const NODE_INDEX_URL: &str = "https://nodejs.org/dist/index.json";
+const CRATE_API_URL: &str = "https://crates.io/api/v1/crates/nvmman";
 const ACCENT: Color = Color::LightCyan;
 const ACCENT_DIM: Color = Color::Cyan;
 const WARM: Color = Color::LightYellow;
@@ -51,6 +52,10 @@ fn main() -> Result<()> {
             println!("nvmman {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        Some("update") => {
+            print_update_status()?;
+            return Ok(());
+        }
         Some(argument) => bail!("unknown argument: {argument}\n\nRun `nvmman --help` for usage."),
         None => {}
     }
@@ -63,9 +68,56 @@ fn main() -> Result<()> {
 
 fn print_help() {
     println!(
-        "nvmman {}\n\nInteractive nvm and global npm package manager.\n\nUSAGE:\n    nvmman\n\nSHORTCUTS:\n    r  Refresh state\n    l  Install latest native LTS\n    g  Sync package registry\n    a  Restore registry packages\n    u  Check global npm updates\n    1-5  Switch views\n    q  Quit\n\nThe interactive UI supports mouse selection and mouse-wheel scrolling.",
+        "nvmman {}\n\nInteractive nvm and global npm package manager.\n\nUSAGE:\n    nvmman\n    nvmman update\n\nCOMMANDS:\n    update  Check crates.io for a newer nvmman release\n\nSHORTCUTS:\n    r  Refresh state\n    l  Install latest native LTS\n    g  Sync package registry\n    a  Restore registry packages\n    u  Check global npm updates\n    1-5  Switch views\n    q  Quit\n\nThe interactive UI supports mouse selection and mouse-wheel scrolling.",
         env!("CARGO_PKG_VERSION")
     );
+}
+
+#[derive(Deserialize)]
+struct CrateApiResponse {
+    #[serde(rename = "crate")]
+    krate: CrateSummary,
+}
+
+#[derive(Deserialize)]
+struct CrateSummary {
+    max_version: String,
+}
+
+fn print_update_status() -> Result<()> {
+    let current = Version::parse(env!("CARGO_PKG_VERSION"))?;
+    let latest = latest_published_version()?;
+    println!("{}", update_message(&current, &latest));
+    Ok(())
+}
+
+fn latest_published_version() -> Result<Version> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(format!("nvmman/{} update-check", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("could not create the crates.io client")?;
+    let response: CrateApiResponse = client
+        .get(CRATE_API_URL)
+        .send()
+        .context("could not check crates.io for nvmman updates")?
+        .error_for_status()
+        .context("crates.io returned an error while checking for updates")?
+        .json()
+        .context("could not decode the crates.io update response")?;
+    Version::parse(&response.krate.max_version)
+        .context("crates.io returned an invalid nvmman version")
+}
+
+fn update_message(current: &Version, latest: &Version) -> String {
+    match latest.cmp(current) {
+        std::cmp::Ordering::Greater => format!(
+            "Update available: nvmman {current} -> {latest}\nRun: cargo install nvmman --version {latest} --force"
+        ),
+        std::cmp::Ordering::Equal => format!("nvmman {current} is up to date."),
+        std::cmp::Ordering::Less => {
+            format!("nvmman {current} is newer than the latest crates.io release ({latest}).")
+        }
+    }
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, manager: Manager) -> Result<()> {
@@ -1557,5 +1609,24 @@ mod tests {
         let inner = Block::default().borders(Borders::ALL).inner(content);
         assert_eq!(update_row_at(content, inner.y + 1), Some(0));
         assert_eq!(update_row_at(content, inner.y + 4), Some(3));
+    }
+
+    #[test]
+    fn update_message_offers_an_exact_install_command() {
+        let current = Version::parse("0.1.2").expect("valid current version");
+        let latest = Version::parse("0.1.3").expect("valid latest version");
+        assert_eq!(
+            update_message(&current, &latest),
+            "Update available: nvmman 0.1.2 -> 0.1.3\nRun: cargo install nvmman --version 0.1.3 --force"
+        );
+    }
+
+    #[test]
+    fn update_message_reports_current_versions() {
+        let version = Version::parse("0.1.3").expect("valid version");
+        assert_eq!(
+            update_message(&version, &version),
+            "nvmman 0.1.3 is up to date."
+        );
     }
 }
