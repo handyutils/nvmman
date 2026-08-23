@@ -5,6 +5,8 @@ and global npm packages. It installs and verifies the latest native-platform LTS
 keeps a consolidated registry from every nvm Node version installed on the
 machine, restores packages into the default Node, and offers one-by-one updates.
 
+**Documentation:** [handyutils.github.io/nvmman](https://handyutils.github.io/nvmman/)
+
 ## Features
 
 - Checks the official Node.js release index and installs the newest LTS.
