@@ -8,7 +8,15 @@ function docsApp() {
     { id: 'shortcuts', category: 'Keyboard', label: 'Keyboard shortcuts', title: 'Keyboard shortcuts', description: 'The TUI supports keyboard navigation, mouse selection, and wheel scrolling.', tags: ['keyboard', 'mouse'], commands: [{ key: '1–5', action: 'Switch views' }, { key: 'q / Esc', action: 'Quit or close a dialog' }, { key: 'j / k', action: 'Navigate and scroll' }] }
   ];
   return {
-    q: '', menuOpen: false, sections,
+    q: '', menuOpen: false, activeScreen: null, sections,
+    screens: [
+      { file: 'assets/screen1.png', title: 'Dashboard', description: 'Latest LTS, architecture, installed versions, and quick actions.' },
+      { file: 'assets/screen2.png', title: 'Installed packages', description: 'Scan global packages across every installed nvm Node.' },
+      { file: 'assets/screen3.png', title: 'Registry', description: 'Review the consolidated package registry before restoring.' },
+      { file: 'assets/screen4.png', title: 'Update check', description: 'Check npm for available updates without blocking the UI.' },
+      { file: 'assets/screen5.png', title: 'Available updates', description: 'Compare installed and latest versions with per-update confirmation.' },
+      { file: 'assets/screen6.png', title: 'Activity', description: 'Follow refreshes, scans, and maintenance work as it happens.' }
+    ],
     views: sections.slice(0, 5).map(s => ({ key: s.category.replace('View ', ''), name: s.label, description: s.description })),
     get filteredCount() { return this.q ? sections.filter(s => this.matches(s)).length : sections.length; },
     matches(section) { const q = this.q.toLowerCase().trim(); if (!q) return true; return [section.title, section.label, section.category, section.description, ...section.tags, ...section.commands.map(c => `${c.key} ${c.action}`)].join(' ').toLowerCase().includes(q); },
